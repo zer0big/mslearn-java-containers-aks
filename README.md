@@ -1,0 +1,1 @@
+Java/JEE 애플리케이션으로 된 MyShuttle을 Azure CI/CD Yalm 파이프라인을 통해 AKS에 배포하는 데모

@@ -1,0 +1,89 @@
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  dockerfilePath: '$(Build.SourcesDirectory)/src/Dockerfile'
+  webRepository: 'web'
+  tag: '$(Build.BuildId)'
+  vmImageName: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  displayName: Build and publish Java container
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    variables:
+    - group: Release
+    steps:
+    - task: Maven@3
+      displayName: 'Maven pom.xml'
+      inputs:
+        options: '-DskipITs --settings ./maven/settings.xml'
+        publishJUnitResults: false
+    - task: CopyFiles@2
+      displayName: Copy WAR file to staging directory
+      inputs:
+        sourceFolder: '$(build.sourcesdirectory)'
+        contents: |
+          target/myshuttledev*.war
+          *.sql
+        targetFolder: '$(build.artifactstagingdirectory)'
+    - task: Docker@2
+      displayName: Build and push Java container image to registry
+      inputs:
+        containerRegistry: 'zeroacrdemo'
+        repository: '$(webRepository)'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+        buildContext: '$(build.artifactstagingdirectory)'
+        tags: |
+          $(Build.BuildId)
+          latest
+    - task: AzureMysqlDeployment@1
+      displayName: Run MySQL initialization script
+      inputs:
+        azureSubscription: 'zeroazureconn'
+        serverName: '$(MySqlServer).mysql.database.azure.com'
+        databaseName: 'alm'
+        sqlUsername: $(MySqlUserName)@$(MySqlServer)
+        sqlPassword: $(MySqlPassword)
+        sqlFile: '$(Build.SourcesDirectory)/CreateMYSQLDB.sql'   
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: 'sed -i "s/latest/$(Build.BuildId)/g" k8s/deploy-svc.yaml'     
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifact: drop'
+      inputs:
+        PathtoPublish: 'k8s/deploy-svc.yaml'
+
+- stage: Deploy
+  displayName: 'Deploy to AKS'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeploymentJob
+    pool:
+      vmImage: $(vmImageName)
+    environment: java-container
+    variables:
+    - group: Release
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: Kubernetes@0
+            displayName: 'kubectl apply'
+            inputs:
+              kubernetesServiceConnection: zeroaksdemo
+              namespace: default
+              command: apply
+              useConfigurationFile: true
+              configuration: '/home/vsts/work/1/drop/deploy-svc.yaml'
+              checkLatest: true
